@@ -10,12 +10,9 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, ValidationError
 
-import os
-my_secret = os.environ['secrets1']
-
 # security settings
 # openssl rand -hex 32
-SECRET_KEY = "9f6f0f4caa6cf63b88e8d3e7"
+SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f709"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
@@ -29,6 +26,10 @@ fake_users_db = {
         "disabled": False,
     }
 }
+fake_users_db = pd.DataFrame({"username": "johndoe", "full_name": "John Doe", "email": "johndoe@example.com", "hashed_password": "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWxn96p36WQoeG6Lruj3vjPGga31lW", "disabled": False}, index=[0])
+pd.DataFrame(fake_users_db).to_csv('users_db.csv', index=False)
+users_db = pd.read_csv('users_db.csv')
+print(users_db)
 
 # more security settings
 class Token(BaseModel):
@@ -58,6 +59,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 # create api
 Unanimity = FastAPI()
 
+def Convertstrlis(string):
+    li = list(string.split(","))
+    return li
+
 # more security shit
 def verify_password(plain_password, hashed_password):
   return pwd_context.verify(plain_password, hashed_password)
@@ -65,15 +70,15 @@ def verify_password(plain_password, hashed_password):
 def get_password_hash(password):
   return pwd_context.hash(password)
 
+def get_user(db: pd.DataFrame, username: str):
+  username = Convertstrlis(username)
+  if db.loc['username', username]:
+    user_dict = db['username'].isin(username)
+    return UserInDB(**user_dict)
+  
 
-def get_user(db, username: str):
-  if username in db:
-      user_dict = db[username]
-      return UserInDB(**user_dict)
-
-
-def authenticate_user(fake_db, username: str, password: str):
-  user = get_user(fake_db, username)
+def authenticate_user(db: pd.DataFrame, username: str, password: str):
+  user = get_user(db, username)
   if not user:
       return False
   if not verify_password(password, user.hashed_password):
@@ -99,14 +104,14 @@ async def get_current_user(token: Annotated[str, Depends(oauth2_scheme)]):
       headers={"WWW-Authenticate": "Bearer"},
   )
   try:
-      payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+      payload = jwt.decode( token, SECRET_KEY, algorithms=[ALGORITHM])
       username: str = payload.get("sub")
       if username is None:
           raise credentials_exception
       token_data = TokenData(username=username)
   except JWTError:
       raise credentials_exception
-  user = get_user(fake_users_db, username=token_data.username)
+  user = get_user(users_db, username=token_data.username)
   if user is None:
       raise credentials_exception
   return user
@@ -118,6 +123,29 @@ async def get_current_active_user(
   if current_user.disabled:
       raise HTTPException(status_code=400, detail="Inactive user")
   return current_user
+
+async def get_requested_user( token: Annotated[str, Depends(oauth2_scheme)], db, username: str):
+  user_exception = HTTPException(
+      status_code=status.HTTP_404_NOT_FOUND,
+      detail="User Not Found",
+      headers={"WWW-Authenticate": "Bearer"},
+  )
+  db_exception = HTTPException(
+      status_code=status.HTTP_404_NOT_FOUND,
+      detail="Database Not Found",
+      headers={"WWW-Authenticate": "Bearer"},
+  )
+  if db != "fake_users_db":
+    raise db_exception
+  else:
+    user = get_user(db=fake_users_db, username=username)
+    if user is None:
+        raise user_exception
+    return user
+
+async def get_databases(token: Annotated[str, Depends(oauth2_scheme)]):
+   dbs: str = 'fake_users_db'
+   return dbs
 
 # api routes
 @Unanimity.get("/")
@@ -141,6 +169,12 @@ async def login_for_access_token(
     )
     return Token(access_token=access_token, token_type="bearer")
 
+@Unanimity.get("/users/{username}", response_model=User)
+async def read_user(
+   requested_user: Annotated[User, Depends(get_requested_user)]
+):
+   return requested_user
+
 @Unanimity.get("/users/me/", response_model=User)
 async def read_users_me(
     current_user: Annotated[User, Depends(get_current_active_user)]
@@ -152,6 +186,12 @@ async def read_own_items(
     current_user: Annotated[User, Depends(get_current_active_user)]
 ):
     return [{"item_id": "Foo", "owner": current_user.username}]
+
+@Unanimity.get("/databases/list/")
+async def list_databases(
+   database_list: Annotated[str, Depends(get_databases)]
+):
+   return database_list
 
 # run api
 uvicorn.run(Unanimity, host="0.0.0.0", port=8000)
